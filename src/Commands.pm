@@ -511,6 +511,8 @@ sub initHandlers {
 			T("Exit this program."),
 			["", T("exit this program")],
 			["2", T("send a special package 'quit_request' to the server, then exit this program")],
+			["3", T("display status, display exp report, disconnect from the server, then exit this program")],
+			["4", T("same as 3, but ignore dcPause for this shutdown")],
 			], \&cmdQuit],
 		['rc', [
 			T("Reload source code files."),
@@ -826,6 +828,10 @@ sub initHandlers {
 			["select <page #> <store #>", T("Selects a store")],
 			["buy [view|end|<item #> [<amount>]]", T("Buys from a store using Universal Catalog Gold")],
 			], \&cmdSearchStore],
+		['searchshop', [
+			T("Find the closest known NPC shop for an item"),
+			[T("<item name | item ID>"), T("shows the nearest known NPC shop that sells the item and its route")]
+			], \&cmdSearchShop],
 		['pause', [
 			T("Delay the next console commands."),
 			["", T("delay the next console commands for 1 second")],
@@ -879,7 +885,7 @@ sub run {
 		my $handler;
 		$handler = $commands{$switch}{callback} if (exists $commands{$switch} && $commands{$switch});
 
-		if (($switch eq 'pause') && (!$cmdQueue) && AI::state == AI::AUTO && ($net->getState() == Network::IN_GAME)) {
+		if (($switch eq 'pause') && (!$cmdQueue) && AI::state() == AI::AUTO() && ($net->getState() == Network::IN_GAME)) {
 			$cmdQueue = 1;
 			$cmdQueueStartTime = time;
 			if ($args > 0) {
@@ -890,7 +896,7 @@ sub run {
 			debug "Command queueing started\n", "ai";
 		} elsif (($switch eq 'pause') && ($cmdQueue > 0)) {
 			push(@cmdQueueList, $command);
-		} elsif (($switch eq 'pause') && (AI::state != AI::AUTO || ($net->getState() != Network::IN_GAME))) {
+		} elsif (($switch eq 'pause') && (AI::state() != AI::AUTO() || ($net->getState() != Network::IN_GAME))) {
 			error T("Cannot use pause command now.\n");
 		} elsif (($handler) && ($cmdQueue > 0) && (!defined binFind(\@cmdQueuePriority,$switch) && ($command ne 'cart') && ($command ne 'storage'))) {
 			push(@cmdQueueList, $command);
@@ -1095,39 +1101,39 @@ sub cmdAI {
 
 	} elsif ($args eq 'on' || $args eq 'auto') {
 		# Set AI to auto mode
-		if (AI::state == AI::AUTO) {
+		if (AI::state() == AI::AUTO()) {
 			message T("AI is already set to auto mode\n"), "success";
 		} else {
-			AI::state(AI::AUTO);
+			AI::state(AI::AUTO());
 			message T("AI set to auto mode\n"), "success";
 		}
 	} elsif ($args eq 'manual') {
 		# Set AI to manual mode
-		if (AI::state == AI::MANUAL) {
+		if (AI::state() == AI::MANUAL()) {
 			message T("AI is already set to manual mode\n"), "success";
 		} else {
-			AI::state(AI::MANUAL);
+			AI::state(AI::MANUAL());
 			message T("AI set to manual mode\n"), "success";
 		}
 	} elsif ($args eq 'off') {
 		# Turn AI off
-		if (AI::state == AI::OFF) {
+		if (AI::state() == AI::OFF()) {
 			message T("AI is already off\n"), "success";
 		} else {
-			AI::state(AI::OFF);
+			AI::state(AI::OFF());
 			message T("AI turned off\n"), "success";
 		}
 
 	} elsif ($args eq '') {
 		# Toggle AI
-		if (AI::state == AI::AUTO) {
-			AI::state(AI::OFF);
+		if (AI::state() == AI::AUTO()) {
+			AI::state(AI::OFF());
 			message T("AI turned off\n"), "success";
-		} elsif (AI::state == AI::OFF) {
-			AI::state(AI::MANUAL);
+		} elsif (AI::state() == AI::OFF()) {
+			AI::state(AI::MANUAL());
 			message T("AI set to manual mode\n"), "success";
-		} elsif (AI::state == AI::MANUAL) {
-			AI::state(AI::AUTO);
+		} elsif (AI::state() == AI::MANUAL()) {
+			AI::state(AI::AUTO());
 			message T("AI set to auto mode\n"), "success";
 		}
 
@@ -1140,14 +1146,14 @@ sub cmdAI {
 sub cmdAIv {
 	# Display current AI sequences
 	my $on;
-	if (AI::state == AI::OFF) {
+	if (AI::state() == AI::OFF()) {
 		message TF("ai_seq (off) = %s\n", "@ai_seq"), "list";
-	} elsif (AI::state == AI::MANUAL) {
+	} elsif (AI::state() == AI::MANUAL()) {
 		message TF("ai_seq (manual) = %s\n", "@ai_seq"), "list";
-	} elsif (AI::state == AI::AUTO) {
+	} elsif (AI::state() == AI::AUTO()) {
 		message TF("ai_seq (auto) = %s\n", "@ai_seq"), "list";
 	}
-	message T("solution\n"), "list" if (AI::args->{'solution'});
+	message T("solution\n"), "list" if (AI::args()->{'solution'});
 	message TF("Active tasks: %s\n", (defined $taskManager) ? $taskManager->activeTasksString() : ''), "info";
 	message TF("Inactive tasks: %s\n", (defined $taskManager) ? $taskManager->inactiveTasksString() : ''), "info";
 }
@@ -2406,7 +2412,7 @@ sub cmdDebug {
 			"\$timeout{ai}: %.2f secs ago  (value should be >%s)\n" .
 			"Last AI() call: %.2f secs ago\n" .
 			('-'x56) . "\n",
-		$conState, $connected, AI::state, "@ai_seq", $time, $ai_timeout,
+		$conState, $connected, AI::state(), "@ai_seq", $time, $ai_timeout,
 		$timeout{'ai'}{'timeout'}, $ai_time), "list";
 	} else {
 		error "Syntax Error in function 'debug' (Toggle debug on/off)\n";
@@ -2929,6 +2935,7 @@ sub cmdSlave {
 	} else {
 		error T("Error: Unknown command in cmdSlave\n");
 	}
+	return unless $slave;
 	my $string = $cmd;
 
 	if ($slave->isa("AI::Slave::Homunculus") && $slave->{homunculus_info}{vaporized}) {
@@ -3061,19 +3068,19 @@ sub cmdSlave {
 
 		} elsif ($args[1] eq 'on' || $args[1] eq 'auto') {
 			# Set AI to auto mode
-			if ($slave->{slave_AI} == AI::AUTO) {
+			if ($slave->{slave_AI} == AI::AUTO()) {
 				message T("Slave AI is already set to auto mode\n"), "success";
 			} else {
-				$slave->{slave_AI} = AI::AUTO;
+				$slave->{slave_AI} = AI::AUTO();
 				undef $slave->{slave_AI_forcedOff};
 				message T("Slave AI set to auto mode\n"), "success";
 			}
 		} elsif ($args[1] eq 'manual') {
 			# Set AI to manual mode
-			if ($slave->{slave_AI} == AI::MANUAL) {
+			if ($slave->{slave_AI} == AI::MANUAL()) {
 				message T("Slave AI is already set to manual mode\n"), "success";
 			} else {
-				$slave->{slave_AI} = AI::MANUAL;
+				$slave->{slave_AI} = AI::MANUAL();
 				$slave->{slave_AI_forcedOff} = 1;
 				message T("Slave AI set to manual mode\n"), "success";
 			}
@@ -3089,16 +3096,16 @@ sub cmdSlave {
 
 		} elsif ($args[1] eq '') {
 			# Toggle AI
-			if ($slave->{slave_AI} == AI::AUTO) {
+			if ($slave->{slave_AI} == AI::AUTO()) {
 				undef $slave->{slave_AI};
 				$slave->{slave_AI_forcedOff} = 1;
 				message T("Slave AI turned off\n"), "success";
 			} elsif (!$slave->{slave_AI}) {
-				$slave->{slave_AI} = AI::MANUAL;
+				$slave->{slave_AI} = AI::MANUAL();
 				$slave->{slave_AI_forcedOff} = 1;
 				message T("Slave AI set to manual mode\n"), "success";
-			} elsif ($slave->{slave_AI} == AI::MANUAL) {
-				$slave->{slave_AI} = AI::AUTO;
+			} elsif ($slave->{slave_AI} == AI::MANUAL()) {
+				$slave->{slave_AI} = AI::AUTO();
 				undef $slave->{slave_AI_forcedOff};
 				message T("Slave AI set to auto mode\n"), "success";
 			}
@@ -3576,7 +3583,7 @@ sub cmdGuild {
 		my $player = Match::player($arg2);
 		if (!$player) {
 			error TF("Player %s does not exist.\n", $arg2);
-		} elsif (!$char->{name} eq $guild{master}) {
+		} elsif ($char->{name} ne $guild{master}) {
 			error T("You must be guildmaster to set an alliance\n");
 			return;
 		} else {
@@ -5059,6 +5066,13 @@ sub cmdQuit {
 	my (undef, $args) = @_;
 	if ($args eq "2") {
 		$messageSender->sendQuit();
+	} elsif ($args eq "3" || $args eq "4") {
+		$config{dcPause} = 0 if $args eq "4";
+		run('s');
+		run('st');
+		run('skills');
+		run('exp report');
+		$messageSender->sendQuit();
 	}
 	quit();
 }
@@ -5949,8 +5963,8 @@ sub cmdTalk {
 				return;
 
 			} else {
-				error T("Error in function 'talk resp' (Respond to NPC)\n" .
-					"Wrong talk resp sintax.\n");
+				error TF("Error in function 'talk resp' (Respond to NPC)\n" .
+					"Wrong talk resp sintax ('%s').\n", $arg);
 				return;
 			}
 
@@ -7088,9 +7102,20 @@ sub cmdQuest {
 		my $msg .= center(" " . T("Quest List") . " ", 79, '-') . "\n";
 		foreach my $questID (keys %{$questList}) {
 			my $quest = $questList->{$questID};
+			my $display_time = $quest->{time_expire};
+			if ((!exists $quest->{missions} || !keys %{$quest->{missions}})
+				&& $quest->{time_start}
+				&& $quest->{time_expire}
+				&& $quest->{time_start} < $quest->{time_expire}) {
+				# For "wait/return after" quests without hunt missions, start time
+				# carries the meaningful availability timestamp on some servers.
+				$display_time = $quest->{time_start};
+			}
 			$msg .= swrite(sprintf("\@%s \@%s \@%s \@%s \@%s", ('>'x2), ('<'x5), ('<'x30), ('<'x10), ('<'x24)),
-				[$k, $questID, $quests_lut{$questID} ? $quests_lut{$questID}{title} : '', $quest->{active} ? T("active") : T("inactive"), $quest->{time_expire} ? scalar localtime $quest->{time_expire} : '']);
-			foreach my $mobID (keys %{$quest->{missions}}) {
+				[$k, $questID, $quests_lut{$questID} ? $quests_lut{$questID}{title} : '', $quest->{active} ? T("active") : T("inactive"), $display_time ? scalar localtime $display_time : '']);
+			foreach my $mobID (sort {
+				($quest->{missions}{$a}{mission_index} // 9999) <=> ($quest->{missions}{$b}{mission_index} // 9999) || $a <=> $b
+			} keys %{$quest->{missions}}) {
 				my $mission = $quest->{missions}->{$mobID};
 				$msg .= swrite(sprintf("\@%s \@%s \@%s", ('>'x2), ('<'x30), ('<'x30)),
 					[" -", $mission->{mob_name}, sprintf(defined $mission->{mob_goal} ? '%d/%d' : '%d', @{$mission}{qw(mob_count mob_goal)})]);
@@ -7191,7 +7216,7 @@ sub cmdWeaponRefine {
 }
 
 sub cmdAnswerCaptcha {
-	if ($net->getState() == Network::IN_GAME()) {
+	if ($net->getState() == Network::IN_GAME) {
 		$messageSender->sendMacroDetectorAnswer($_[1]);
 	} else {
 		$messageSender->sendCaptchaAnswer($_[1]);
@@ -8537,13 +8562,72 @@ sub cmdSearchStore {
 		return;
 	}
 
-	error T("Syntax error in 'searchstore' command (Universal catalog command)\n" .
+error T("Syntax error in 'searchstore' command (Universal catalog command)\n" .
 			"searchstore close : Closes search store catalog\n" .
 			"searchstore next : Requests catalog next page\n" .
 			"searchstore view <page #> : Shows catalog page # (0-indexed)\n" .
 			"searchstore search [match|exact] \"<item name>\" [card \"<card name>\"] [price <min_price>..<max_price>] [sell|buy] : Searches for an item\n" .
 			"searchstore select <page #> <store #> : Selects a store\n" .
 			"searchstore buy [view|end|<item #> [<amount>]] : Buys from a store using Universal Catalog Gold\n");
+}
+
+sub cmdSearchShop {
+	my ($cmd, $args) = @_;
+	my ($item_arg) = parseArgs($args, 1);
+
+	if (!$net || $net->getState() != Network::IN_GAME) {
+		error TF("You must be logged in the game to use this command '%s'\n", $cmd);
+		return;
+	}
+
+	if (!defined $item_arg || $item_arg eq '') {
+		error T("Syntax Error in function 'searchshop' (Closest NPC Shop)\n" .
+			"Usage: searchshop <item name | item ID>\n");
+		return;
+	}
+
+	my $item_id;
+	if ($item_arg =~ /^\d+$/) {
+		$item_id = $item_arg;
+	} else {
+		$item_id = itemNameToID($item_arg);
+		if (!defined $item_id) {
+			my @matches = containsItemNameToIDList($item_arg);
+			if (@matches == 1) {
+				$item_id = $matches[0];
+			} elsif (@matches > 1) {
+				my @names = map { itemNameSimple($_) } @matches[0 .. ($#matches < 4 ? $#matches : 4)];
+				error TF("Error in function 'searchshop' (Closest NPC Shop)\n" .
+					"Item name '%s' is ambiguous. Matches: %s\n", $item_arg, join(', ', @names));
+				return;
+			}
+		}
+	}
+
+	if (!defined $item_id) {
+		error TF("Error in function 'searchshop' (Closest NPC Shop)\n" .
+			"Item '%s' not found\n", $item_arg);
+		return;
+	}
+
+	my $shop = get_closest_npc_shop_for_item($item_id, 0);
+	if (!$shop) {
+		error TF("No known NPC shop sells %s (%s).\n", itemNameSimple($item_id), $item_id);
+		return;
+	}
+
+	my $price = defined $shop->{price} ? formatNumber($shop->{price}) . 'z' : T('unknown');
+	my $move_cost = defined $shop->{move_cost} ? formatNumber($shop->{move_cost}) . 'z' : T('unknown');
+	my $route = defined $shop->{route} && $shop->{route} ne '' ? $shop->{route} : T('unknown');
+	my $msg = center(T(" Closest NPC Shop "), 64, '-') . "\n" .
+		TF("Item: %s (%s)\n", itemNameSimple($item_id), $item_id) .
+		TF("Map : %s\n", $shop->{map}) .
+		TF("Pos : %s, %s\n", $shop->{x}, $shop->{y}) .
+		TF("Price: %s\n", $price) .
+		TF("Move Cost: %s\n", $move_cost) .
+		TF("Route: %s\n", $route) .
+		('-' x 64) . "\n";
+	message $msg, "info";
 }
 
 sub cmdRevive {

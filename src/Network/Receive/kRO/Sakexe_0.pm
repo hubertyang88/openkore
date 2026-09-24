@@ -1381,10 +1381,9 @@ sub skill_used_no_damage {
 		my $pos = calcPosFromPathfinding($field, $char);
 		%{$char->{pos}} = %{$pos};
 		%{$char->{pos_to}} = %{$pos};
-		$char->{time_move} = 0;
+		$char->{time_move} = time;
 		$char->{time_move_calc} = 0;
 		$char->{solution} = [];
-		push(@{$char->{solution}}, { x => $char->{pos}{x}, y => $char->{pos}{y} });
 	}
 
 	# Resolve source and target names
@@ -1418,7 +1417,7 @@ sub skill_used_no_damage {
 		$timeout{ai_teleport_delay}{time} = time;
 	}
 
-	if (AI::state == AI::AUTO && $config{'autoResponseOnHeal'}) {
+	if (AI::state() == AI::AUTO() && $config{'autoResponseOnHeal'}) {
 		# Handle auto-response on heal
 		my $player = $playersList->getByID($args->{sourceID});
 		if ($player && ($args->{skillID} == 28 || $args->{skillID} == 29 || $args->{skillID} == 34)) {
@@ -1522,3 +1521,5 @@ sub inventory_expansion_info {
 *changeToInGameState = *Network::Receive::changeToInGameState;
 
 1;
+
+

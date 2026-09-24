@@ -1,25 +1,86 @@
-###########################
-# eCast plugin for OpenKore by Henrybk
 #
-# This plugin is based on the work of Damokles, kaliwanagan and xlr82xs
-# 
-# This plugin extends all functions which use 'checkMonsterCondition'.
-# Basically these are AttackSkillSlot, equipAuto, AttackComboSlot, monsterSkill.
+# eCast
+# Author: Henrybk
 #
-# Following new checks are possible:
+# This plugin is based on the work of Damokles, kaliwanagan and xlr82xs.
 #
-# target_Element (list)
-# target_notElement (list)
-# target_Race (list)
-# target_notRace (list)
-# target_Size (list)
-# target_notSize (list)
-# target_hpLeft (range)
-# target_notImmovable boolean
+# What this plugin does:
+# This plugin extends monster condition checks used by OpenKore skill and
+# equipment logic. It adds extra target filters based on monster database data
+# from monsters_table.txt, plus a few runtime checks such as changed element,
+# freeze/petrify overrides, and whether the cell behind the target is free.
 #
+# It mainly affects systems that rely on checkMonsterCondition, such as:
+# - AttackSkillSlot
+# - equipAuto
+# - AttackComboSlot
+# - monsterSkill
 #
-# For the element names just scroll a bit down and you'll find it.
-# You can check for element Lvls too, eg. target_Element Dark4
+# Extra checks provided by this plugin:
+# - Blocks skill casts while self is under statuses that prevent casting
+# - target_Element
+# - target_notElement
+# - target_Race
+# - target_notRace
+# - target_Size
+# - target_notSize
+# - target_hpLeft
+# - target_Level
+# - target_cellBehindFree
+# - target_isAIMode_Aggressive
+# - target_isAIMode_Looter
+# - target_isAIMode_Assit / target_isAIMode_Assist
+# - target_isAIMode_CanMove
+# - target_isAIMode_CastSensorIdle
+# - target_isAIMode_CastSensorChase
+# - target_isAIMode_MVP
+# - target_isAIMode_KnockbackImmune
+# - target_isAIMode_Detector
+# - target_isAIMode_TakesFixed_1_Damage_Melee
+# - target_isAIMode_TakesFixed_1_Damage_Ranged
+# - target_isAIMode_TakesFixed_1_Damage_Magic
+# - target_isAIMode_TakesFixed_1_Damage_None
+#
+# How to configure it:
+# Use the normal skill or equipment condition prefixes in config.txt and add
+# the extra eCast-specific target checks to them.
+#
+# Supported values:
+# - Element names such as Neutral, Fire, Water, Earth, Wind, Poison, Holy,
+#   Shadow, Ghost, Undead
+# - Element plus level such as Dark4 or Fire2
+# - Race names such as Formless, Undead, Brute, Plant, Insect, Fish, Demon,
+#   Demi-Human, Angel, Dragon
+# - Size values: Small, Medium, Large
+# - Range values for HP and Level checks
+# - target_cellBehindFree:
+#   1 = require a free cell behind the target
+#   0 = require that the cell behind the target is not free
+# - target_isAIMode_*:
+#   1 = require that the AI mode flag is present
+#   0 = require that the AI mode flag is not present
+#
+# Examples:
+# 1. Only cast a skill on Fire monsters:
+#    attackSkillSlot_0_target_Element Fire
+#
+# 2. Only cast on Shadow level 4 targets:
+#    attackSkillSlot_0_target_Element Shadow4
+#
+# 3. Avoid using a skill on Large monsters:
+#    attackSkillSlot_0_target_notSize Large
+#
+# 4. Only cast when the target HP is in a certain range:
+#    attackSkillSlot_0_target_hpLeft 0..5000
+#
+# 5. Only cast when the cell behind the target is free:
+#    attackSkillSlot_0_target_cellBehindFree 1
+#
+# Notes:
+# - This plugin reads monster data from monsters_table.txt.
+# - If a monster changes element dynamically, the plugin uses the updated
+#   runtime element instead of the default table value.
+# - Petrified monsters are treated as Earth 1 and frozen monsters as Water 1.
 #
 
 package eCast;
@@ -27,17 +88,12 @@ package eCast;
 use strict;
 use Plugins;
 use Globals;
-use Settings;
 use Log qw(message warning error debug);
 use Misc qw(bulkConfigModify isCellOccupied);
 use Translation qw(T TF);
 use Utils;
 use AI;
 use POSIX qw(floor);
-use Data::Dumper;
-$Data::Dumper::Sortkeys = 1;
-
-use YAML::XS 'LoadFile';
 
 use constant {
 	PLUGIN_NAME => 'eCast',
@@ -46,19 +102,12 @@ use constant {
 Plugins::register(PLUGIN_NAME, 'Extends Skill Selection and Placement', \&onUnload);
 
 my $hooks = Plugins::addHooks(
-	['start3',						\&on_start3, undef],
+	['checkSelfCondition', \&extendedSelfCheck, undef],
 	['checkMonsterCondition', \&extendedCheck, undef],
 	['packet_skilluse', \&onPacketSkillUse, undef],
 	['packet/skill_use_no_damage', \&onPacketSkillUseNoDamage, undef],
 	['packet_attack', \&onPacketAttack, undef],
-	['check_attackLooter', \&oncheck_attackLooter, undef],
 );
-
-our $folder = $Plugins::current_plugin_folder;
-
-my $mobs_info;
-
-my %mobs_db;
 
 my @element_lut = qw(Neutral Water Earth Fire Wind Poison Holy Shadow Ghost Undead);
 my @race_lut = qw(Formless Undead Brute Plant Insect Fish Demon Demi-Human Angel Dragon);
@@ -73,121 +122,56 @@ my %skillChangeElement = qw(
 	NPC_CHANGEDARKNESS Shadow
 	NPC_CHANGETELEKINESIS Ghost
 );
-
-my %ai_constant = (
-        '01' => 0x81, '02' => 0x83, '03' => 0x1089, '04' => 0x3885,
-        '05' => 0x2085, '06' => 0, '07' => 0x108B, '08' => 0x7085,
-        '09' => 0x3095, '10' => 0x84, '11' => 0x84, '12' => 0x2085,
-        '13' => 0x308D, '17' => 0x91, '19' => 0x3095, '20' => 0x3295,
-        '21' => 0x3695, '24' => 0xA1, '25' => 0x1, '26' => 0xB695,
-        '27' => 0x8084, 'ABR_PASSIVE' => 0x21, 'ABR_OFFENSIVE' => 0xA5
+my %monster_ai_mode_flags = (
+	isAIMode_Aggressive                 => 'isAIMode_Aggressive',
+	isAIMode_Looter                     => 'isAIMode_Looter',
+	isAIMode_Assist                     => 'isAIMode_Assist',
+	isAIMode_CanMove                    => 'isAIMode_CanMove',
+	isAIMode_CastSensorIdle             => 'isAIMode_CastSensorIdle',
+	isAIMode_CastSensorChase            => 'isAIMode_CastSensorChase',
+	isAIMode_MVP                        => 'isAIMode_MVP',
+	isAIMode_KnockbackImmune            => 'isAIMode_KnockbackImmune',
+	isAIMode_Detector                   => 'isAIMode_Detector',
+	isAIMode_TakesFixed_1_Damage_Melee  => 'isAIMode_TakesFixed_1_Damage_Melee',
+	isAIMode_TakesFixed_1_Damage_Ranged => 'isAIMode_TakesFixed_1_Damage_Ranged',
+	isAIMode_TakesFixed_1_Damage_Magic  => 'isAIMode_TakesFixed_1_Damage_Magic',
+	isAIMode_TakesFixed_1_Damage_None   => 'isAIMode_TakesFixed_1_Damage_None',
 );
-
-=pod
-/// Monster mode definitions to clear up code reading. [Skotlex]
-enum e_mode {
-	MD_NONE					= 0x0000000,
-	MD_CANMOVE				= 0x0000001,
-	MD_LOOTER				= 0x0000002,
-	MD_AGGRESSIVE			= 0x0000004,
-	MD_ASSIST				= 0x0000008,
-	MD_CASTSENSORIDLE		= 0x0000010,
-	MD_NORANDOMWALK			= 0x0000020,
-	MD_NOCAST				= 0x0000040,
-	MD_CANATTACK			= 0x0000080,
-	//FREE					= 0x0000100,
-	MD_CASTSENSORCHASE		= 0x0000200,
-	MD_CHANGECHASE			= 0x0000400,
-	MD_ANGRY				= 0x0000800,
-	MD_CHANGETARGETMELEE	= 0x0001000,
-	MD_CHANGETARGETCHASE	= 0x0002000,
-	MD_TARGETWEAK			= 0x0004000,
-	MD_RANDOMTARGET			= 0x0008000,
-	MD_IGNOREMELEE			= 0x0010000,
-	MD_IGNOREMAGIC			= 0x0020000,
-	MD_IGNORERANGED			= 0x0040000,
-	MD_MVP					= 0x0080000,
-	MD_IGNOREMISC			= 0x0100000,
-	MD_KNOCKBACKIMMUNE		= 0x0200000,
-	MD_TELEPORTBLOCK		= 0x0400000,
-	//FREE					= 0x0800000,
-	MD_FIXEDITEMDROP		= 0x1000000,
-	MD_DETECTOR				= 0x2000000,
-	MD_STATUSIMMUNE			= 0x4000000,
-	MD_SKILLIMMUNE			= 0x8000000,
-};
-=cut
+my @self_cast_blocking_statuses = qw(
+	EFST_HANDICAPSTATE_DEEPSILENCE
+	HEALTHSTATE_SILENCE
+	EFST_HEALTHSTATE_SILENCE
+	EFST_BODYSTATE_STUN
+	EFST_BODYSTATE_FREEZING
+	EFST_BODYSTATE_STONECURSE
+	EFST_HANDICAPSTATE_LIGHTNINGSTRIKE
+	EFST_HANDICAPSTATE_CRYSTALLIZATION
+	EFST_BODYSTATE_SLEEP
+);
 
 sub onUnload {
 	Plugins::delHooks($hooks);
-	undef %mobs_db;
-	undef $mobs_info;
 }
 
-sub oncheck_attackLooter {
-	my ($hook, $args) = @_;
-	return 0 if (!$args->{monster} || $args->{monster}->{nameID} eq '');
-
-	if (!exists $mobs_db{$args->{monster}->{nameID}}) {
-		Log::warning("[eCast] [oncheck_attackLooter] : Monster {name '$args->{monster}->{name}'} {ID '$args->{monster}->{nameID}'} not found\n", 'eCast');
-		return;
-	}
-
-	my $mob = $mobs_db{$args->{monster}->{nameID}};
-	my $ai = $mob->{Ai};
-	my $is_looter = is_monster_ai_looter($ai);
-	if (!$is_looter) {
-		Log::debug("[eCast] [oncheck_attackLooter] [False] $args->{monster} ($args->{monster}->{nameID}) is a not Looter\n", 'eCast');
-		$args->{return} = 1;
-	} else {
-		Log::debug("[eCast] [oncheck_attackLooter] [True] $args->{monster} ($args->{monster}->{nameID}) is a Looter\n", 'eCast');
-	}
-}
-
-sub is_monster_ai_looter {
-    my ($ai_str) = @_;
-    $ai_str = uc($ai_str);  # Normalize to uppercase
-
-    # Use the AI's value if defined, else default to '06' (0)
-    my $mode_value = exists $ai_constant{$ai_str} 
-                   ? $ai_constant{$ai_str} 
-                   : $ai_constant{'06'};
-
-    # Check if MD_LOOTER bit (0x2) is set
-    return ($mode_value & 0x2) ? 1 : 0;
-}
-
-sub on_start3 {
-    $mobs_info = LoadFile((File::Spec->catdir($folder,'mob_db.yml')));
-	if (!defined $mobs_info) {
-		error "[".PLUGIN_NAME."] Could not load mobs info due to a file loading problem.\n.";
-		return;
-	}
+sub extendedSelfCheck {
+	my (undef, $args) = @_;
+	my $prefix = $args->{prefix};
 	
-	#Log::warning Data::Dumper::Dumper ($mobs_info);
+	return unless defined $prefix;
+	return unless $prefix =~ /^(?:attackSkillSlot|attackComboSlot|useSelf_skill|partySkill|monsterSkill)_/;
+	return unless $char;
 	
-	my @list = (qw(Id AegisName Name JapaneseName Level Hp Sp BaseExp JobExp MvpExp Attack Attack2 Defense MagicDefense Resistance MagicResistance Str Agi Vit Int Dex Luk AttackRange SkillRange ChaseRange Size Race Element ElementLevel WalkSpeed AttackDelay AttackMotion DamageMotion DamageTaken Ai Class));
-	my @deaf = (qw(0 xxx xxx xxx 1 1 1 0 0 0 0 0 0 0 0 0 1 1 1 1 1 1 0 0 0 Small Formless Neutral 1 150 0 0 0 100 06 Normal));
-	my $i = 0;
-	foreach my $mob (@{$mobs_info->{'Body'}}) {
-		next unless (exists $mob->{Id} && defined $mob->{Id});
-		my $ID = $mob->{Id};
-		
-		foreach my $index (0..$#list) {
-			my $key = $list[$index];
-			my $default = $deaf[$index];
-			if (exists $mob->{$key}) {
-				$mobs_db{$ID}{$key} = $mob->{$key};
-			} else {
-				$mobs_db{$ID}{$key} = $default;
-			}
-		}
-		$i++;
-	}
+	my @active_blockers = grep { $char->statusActive($_) } @self_cast_blocking_statuses;
+	return unless @active_blockers;
 	
-	#Log::warning Data::Dumper::Dumper (\%mobs_db);
-	
-	message TF("%d monsters in database\n", $i), 'mobs_db';
+	debug(
+		"Will not cast $config{$prefix} because self has cast-blocking status(es): "
+		. join(', ', @active_blockers)
+		. "\n",
+		'eCast',
+		1
+	);
+	$args->{return} = 0;
 }
 
 # TODO: Revisar
@@ -210,13 +194,13 @@ sub extendedCheck {
 		}
 	}
 
-	if (!exists $mobs_db{$args->{monster}->{nameID}}) {
+	if (!exists $monstersTable{$args->{monster}->{nameID}}) {
 		Log::warning("eCast: Monster {name '$args->{monster}->{name}'} {ID '$args->{monster}->{nameID}'} not found\n", 'eCast');
 		return 0;
 	}
 
 	my $ID = $args->{monster}->{nameID};
-	my $mob = $mobs_db{$args->{monster}->{nameID}};
+	my $mob = $monstersTable{$args->{monster}->{nameID}};
 	
 	my $element = $mob->{Element};
 	my $element_lvl = $mob->{ElementLevel};
@@ -273,7 +257,7 @@ sub extendedCheck {
 	}
 
 	if ($config{$args->{prefix} . '_hpLeft'}
-	&& !inRange(($mob->{Hp} + $args->{monster}->{deltaHp}),$config{$args->{prefix} . '_hpLeft'})) {
+	&& !inRange(($mob->{HP} + $args->{monster}->{deltaHp}),$config{$args->{prefix} . '_hpLeft'})) {
 	return $args->{return} = 0;
 	}
 
@@ -282,14 +266,32 @@ sub extendedCheck {
 	return $args->{return} = 0;
 	}
 
-	#my $skillLevel = $config{$skillBlock.'_lvl'};
-	
-	#my $potentialDamage = calcSkillDamage($config{$skillBlock.'_damageFormula'}, $config{$skillBlock.'_lvl'}, int($args->{monster}->{nameID}), $config{$skillBlock.'_damageType'});
-	#if ($config{$skillBlock.'_damageFormula'}
-	#&& inRange(($mob->{Hp} + $args->{monster}->{deltaHp}),'>= '.$potentialDamage)) {
-	#	debug("Rejected $config{$skillBlock} with estimated damage : $potentialDamage using skill level $skillLevel\n", 'eCast', 1);
-	#	return $args->{return} = 0;
-	#}
+	if (!checkMonsterAIModeConditions($args->{prefix}, $args->{monster}, $mob, $skillBlock)) {
+		return $args->{return} = 0;
+	}
+
+	return 1;
+}
+
+sub checkMonsterAIModeConditions {
+	my ($prefix, $monster, $mob, $skill) = @_;
+
+	for my $condition (sort keys %monster_ai_mode_flags) {
+		my $config_key = $prefix . '_' . $condition;
+		next unless exists $config{$config_key} && defined $config{$config_key};
+
+		my $expected = $config{$config_key} ? 1 : 0;
+		my $has_flag = $mob->{$monster_ai_mode_flags{$condition}} ? 1 : 0;
+		next if $expected == $has_flag;
+
+		my $state = $expected ? 'missing' : 'present';
+		debug(
+			"Will not cast $config{$skill} on $monster because AI mode $condition is $state\n",
+			'eCast',
+			1
+		);
+		return 0;
+	}
 
 	return 1;
 }
@@ -390,8 +392,8 @@ sub monsterHp {
 	my ($monster, $message) = @_;
 	return 1 unless $monster && $monster->{nameID};
 	my $ID = int($monster->{nameID});
-	return 1 unless my $monsterInfo = $mobs_db{$ID};
-	$$message =~ s~(?=\n)~TF(" (Hp: %d/%d)", $mobs_db{$ID}{Hp} + $monster->{deltaHp}, $mobs_db{$ID}{Hp})~se;
+	return 1 unless my $monsterInfo = $monstersTable{$ID};
+	$$message =~ s~(?=\n)~TF(" (Hp: %d/%d)", $monsterInfo->{HP} + $monster->{deltaHp}, $monsterInfo->{HP})~se;
 }
 
 1;
